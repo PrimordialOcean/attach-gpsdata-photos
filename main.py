@@ -2,23 +2,48 @@ import bs4
 import csv
 import piexif
 import math
+import pathlib
+import glob
 import pandas as pd
+from datetime import datetime
 from fractions import Fraction
+from dateutil import tz
+
+# sets UTC
+JST = tz.gettz('Asia/Tokyo')
+UTC = tz.gettz("UTC")
 
 # sets type alias
 NumSexagesimal = tuple[int, int, float, str]
 LocSexagesimal = tuple[NumSexagesimal, NumSexagesimal]
 GPSExif = tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
 
+# read datetime
+def read_datetime(imgname: str) -> datetime:
+    exif_dict = piexif.load(imgname)
+    datetimeoriginal = exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal]
+    datetime_formatted = datetime.strptime(datetimeoriginal.decode("utf-8"), "%Y:%m:%d %H:%M:%S")
+    return datetime_formatted
+
 # converts gpx format GPS files to csv format files
 def convert_gpx_to_csv(gpxfile: str):
+    # convert datetime to Y-m-d H:M:S style (UTC -> JST)
+    def convert_datetime(datetime_gpx: str) -> datetime:
+        datetime_formatted \
+        = datetime.strptime(datetime_gpx, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).astimezone(JST).replace(tzinfo=None)
+        return datetime_formatted
+
     with open(gpxfile, encoding="utf-8") as f:
         soup = bs4.BeautifulSoup(f, "lxml")
 
-    with open("output.csv", "w", newline="") as f:
+    with open("out.csv", "w", newline="") as f:
         writer = csv.writer(f)
+        writer.writerow(["DateTime", "Latitude", "Longlitude", "Elevater"])
         for i in soup.find_all("trkpt"):
-            writer.writerow([i["lat"], i["lon"], i.ele.string, i.time.string])
+            datetime_formatted = convert_datetime(i.time.string)
+            writer.writerow(
+                [datetime_formatted, i["lat"], i["lon"], i.ele.string]
+                )
 
 # converts decimal coordinate data to sexagesimal tuple type data
 def convert_loc(loc_decimal: tuple[float, float]) -> LocSexagesimal:
@@ -80,14 +105,32 @@ def edit_exif_to_img(filename: str, exif_add: dict):
     piexif.insert(piexif.dump(exif_data), filename)
     piexif.load(filename)
 
-def main():
-    gpxfile = "gpsdata/20210725.gpx"
-    convert_gpx_to_csv(gpxfile)
-    loc_decimal = (36.948731, 139.975301) # dummy value
+def select_index(datetime_img: pd._libs.tslibs.timestamps.Timestamp,
+                 df_gpx: pd.core.frame.DataFrame) -> tuple[float, float]:
+    datetime_gpx = pd.to_datetime(df_gpx["DateTime"])
+    index_min = abs(datetime_gpx - datetime_img).idxmin()
+    latitude = df_gpx["Latitude"][index_min]
+    longlitude = df_gpx["Longlitude"][index_min]
+    loc_decimal = (latitude, longlitude)
+    return loc_decimal
 
-    loc_sexagesimal = convert_loc(loc_decimal)
-    gps_exif = generate_exifloc(loc_sexagesimal)
-    edit_exif_to_img("img/test.jpg", gps_exif)
+def main():
+    # inputs filenames
+    # imagename = "img/test.jpg"
+    gpxfile = "gpx/gpsfile.gpx"
+
+    # gets image paths
+    list_img = list(pathlib.Path("img").glob("**/*.jpg"))
+    list_img = [str(i) for i in list_img]
+    for imagename in list_img:
+        datetime_img = read_datetime(imagename)
+        convert_gpx_to_csv(gpxfile)
+
+        df_gpx = pd.read_csv("out.csv")
+        loc_decimal = select_index(datetime_img, df_gpx)
+        loc_sexagesimal = convert_loc(loc_decimal)
+        gps_exif = generate_exifloc(loc_sexagesimal)
+        edit_exif_to_img(imagename, gps_exif)
 
 if __name__ == "__main__":
     main()
